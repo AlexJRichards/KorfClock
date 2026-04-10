@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>KorfClock – Display</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      background: #111;
+      color: #f0f0f0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+
+    /* ── Mode label ── */
+    #mode-label {
+      font-size: clamp(1rem, 3vw, 1.8rem);
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
+      color: #555;
+      margin-bottom: 0.4em;
+      transition: color 0.3s;
+    }
+    #mode-label.timeout-mode { color: #ff9900; }
+
+    /* ── Main timer ── */
+    #timer {
+      font-size: clamp(6rem, 30vw, 26rem);
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+      line-height: 0.9;
+      color: #00ff88;
+      transition: color 0.3s;
+      text-align: center;
+    }
+
+    /* Colour states */
+    #timer.warn        { color: #ffcc00; }
+    #timer.danger      { color: #ff3333; }
+    #timer.timeout-mode{ color: #ff9900; }
+    #timer.expired     { color: #ff3333; }
+
+    /* ── Flash overlay when timer expires ── */
+    #flash {
+      position: fixed;
+      inset: 0;
+      background: #ff3333;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.05s;
+    }
+    #flash.flash-active { opacity: 0.55; }
+
+    /* ── Connection status (bottom-right, subtle) ── */
+    #conn-status {
+      position: fixed;
+      bottom: 0.8rem;
+      right: 1rem;
+      font-size: 0.7rem;
+      color: #333;
+      letter-spacing: 0.06em;
+    }
+    #conn-dot {
+      display: inline-block;
+      width: 0.5rem;
+      height: 0.5rem;
+      border-radius: 50%;
+      background: #333;
+      margin-right: 0.3rem;
+      vertical-align: middle;
+    }
+    #conn-dot.connected    { background: #00c853; }
+    #conn-dot.disconnected { background: #d32f2f; }
+  </style>
+</head>
+<body>
+  <div id="mode-label">Shot Clock</div>
+  <div id="timer">25</div>
+
+  <!-- Red flash overlay shown at expiry -->
+  <div id="flash"></div>
+
+  <p id="conn-status">
+    <span id="conn-dot"></span>
+    <span id="conn-text">Connecting…</span>
+  </p>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // ── State ─────────────────────────────────────────────────────────────────
+    let state = null;        // most-recent server state snapshot
+    let clockOffset = 0;     // ms: client time - server time (compensates latency)
+    let rafId = null;        // requestAnimationFrame handle
+    let wasExpired = false;  // tracks transition into expired state
+
+    // AudioContext for expiry beep (created lazily after first user gesture or
+    // after visibility change to comply with browser autoplay policies)
+    let audioCtx = null;
+
+    const socket = io();
+
+    // ── Socket events ─────────────────────────────────────────────────────────
+    socket.on('connect', ()    => setConnected(true));
+    socket.on('disconnect', () => setConnected(false));
+
+    socket.on('timerUpdate', (incoming) => {
+      clockOffset = Date.now() - incoming.serverTime;
+      const wasRunning = state && state.running;
+      state = incoming;
+
+      // Reset expiry flag when a new timer starts
+      if (state.running && state.remaining > 0) wasExpired = false;
+
+      scheduleRender();
+    });
+
+    // ── Rendering ─────────────────────────────────────────────────────────────
+
+    /** Current remaining seconds, compensated for network latency. */
+    function getCurrentRemaining() {
+      if (!state) return 0;
+      if (!state.running) return state.remaining;
+      const adjustedStart = state.startTime + clockOffset;
+      const elapsed = (Date.now() - adjustedStart) / 1000;
+      return Math.max(0, state.startRemaining - elapsed);
+    }
+
+    /** Kick off the RAF loop if running; single render if paused. */
+    function scheduleRender() {
+      if (state && state.running) {
+        if (!rafId) loop();
+      } else {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+        render();
+      }
+    }
+
+    function loop() {
+      render();
+      if (state && state.running && getCurrentRemaining() > 0) {
+        rafId = requestAnimationFrame(loop);
+      } else {
+        rafId = null;
+        render(); // final paint at 0
+      }
+    }
+
+    // ── Beep ──────────────────────────────────────────────────────────────────
+
+    function ensureAudioCtx() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      return audioCtx;
+    }
+
+    function playExpiredBeep() {
+      try {
+        const ctx = ensureAudioCtx();
+        // Three short beeps
+        [0, 0.18, 0.36].forEach((offset) => {
+          const osc  = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.type = 'square';
+          osc.frequency.value = 880;
+          gain.gain.setValueAtTime(0.25, ctx.currentTime + offset);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + offset + 0.14);
+          osc.start(ctx.currentTime + offset);
+          osc.stop(ctx.currentTime + offset + 0.14);
+        });
+      } catch (e) {
+        // Audio may be blocked; fail silently
+      }
+    }
+
+    // ── Flash overlay ─────────────────────────────────────────────────────────
+
+    let flashTimeout = null;
+    function triggerFlash() {
+      const el = document.getElementById('flash');
+      el.classList.add('flash-active');
+      clearTimeout(flashTimeout);
+      flashTimeout = setTimeout(() => el.classList.remove('flash-active'), 600);
+    }
+
+    // ── Main render ───────────────────────────────────────────────────────────
+
+    function render() {
+      if (!state) return;
+
+      const rem       = getCurrentRemaining();
+      const isTimeout = state.mode === 'timeout';
+      const expired   = rem <= 0;
+
+      // ── Expiry effects (fire once per expiry event)
+      if (expired && !wasExpired) {
+        wasExpired = true;
+        triggerFlash();
+        playExpiredBeep();
+      }
+
+      // ── Mode label
+      const modeEl = document.getElementById('mode-label');
+      modeEl.textContent = isTimeout ? 'Timeout' : 'Shot Clock';
+      modeEl.className   = isTimeout ? 'timeout-mode' : '';
+
+      // ── Timer value: show tenths in last 5 seconds
+      const timerEl = document.getElementById('timer');
+      if (expired) {
+        timerEl.textContent = '0';
+      } else if (rem <= 5) {
+        timerEl.textContent = rem.toFixed(1);
+      } else {
+        timerEl.textContent = Math.ceil(rem).toString();
+      }
+
+      // ── Colour
+      timerEl.className = '';
+      if (expired) {
+        timerEl.classList.add('expired');
+      } else if (isTimeout) {
+        timerEl.classList.add('timeout-mode');
+      } else if (rem <= 5) {
+        timerEl.classList.add('danger');
+      } else if (rem <= 10) {
+        timerEl.classList.add('warn');
+      }
+    }
+
+    // ── Connection indicator ───────────────────────────────────────────────────
+    function setConnected(yes) {
+      document.getElementById('conn-dot').className  = yes ? 'connected' : 'disconnected';
+      document.getElementById('conn-text').textContent = yes ? 'Connected' : 'Disconnected';
+    }
+
+    // Unlock AudioContext on first touch/click (mobile browser requirement)
+    document.addEventListener('click',      ensureAudioCtx, { once: true });
+    document.addEventListener('touchstart', ensureAudioCtx, { once: true });
+  </script>
+</body>
+</html>
