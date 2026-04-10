@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>KorfClock – Controller</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #1a1a1a;
+      color: #f0f0f0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 1.5rem 1rem;
+      gap: 1.5rem;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      letter-spacing: 0.08em;
+      color: #888;
+      text-transform: uppercase;
+    }
+
+    /* ── mini timer display ── */
+    #mini-display {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.4rem;
+      background: #252525;
+      border-radius: 1rem;
+      padding: 1.2rem 3rem;
+      min-width: 16rem;
+    }
+
+    #mode-label {
+      font-size: 0.85rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #888;
+    }
+
+    #timer-value {
+      font-size: 4.5rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.04em;
+      line-height: 1;
+      color: #00ff88;
+      transition: color 0.3s;
+      min-width: 4ch;
+      text-align: center;
+    }
+
+    #timer-value.warn   { color: #ffcc00; }
+    #timer-value.danger { color: #ff3333; }
+    #timer-value.timeout-mode { color: #ff9900; }
+
+    #status-label {
+      font-size: 0.8rem;
+      letter-spacing: 0.1em;
+      color: #555;
+      text-transform: uppercase;
+    }
+
+    /* ── control buttons ── */
+    .btn-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      width: 100%;
+      max-width: 22rem;
+    }
+
+    button {
+      padding: 1.4rem 0.5rem;
+      border: none;
+      border-radius: 0.75rem;
+      font-size: 1.15rem;
+      font-weight: 700;
+      cursor: pointer;
+      letter-spacing: 0.04em;
+      transition: opacity 0.15s, transform 0.1s;
+      -webkit-tap-highlight-color: transparent;
+    }
+    button:active { opacity: 0.75; transform: scale(0.97); }
+
+    #btn-start   { background: #00c853; color: #fff; }
+    #btn-stop    { background: #d32f2f; color: #fff; }
+    #btn-reset   { background: #1565c0; color: #fff; }
+    #btn-timeout { background: #e65100; color: #fff; }
+
+    /* ── connection status ── */
+    #conn-status {
+      font-size: 0.78rem;
+      color: #555;
+    }
+    #conn-dot {
+      display: inline-block;
+      width: 0.55rem;
+      height: 0.55rem;
+      border-radius: 50%;
+      background: #555;
+      margin-right: 0.35rem;
+      vertical-align: middle;
+    }
+    #conn-dot.connected    { background: #00c853; }
+    #conn-dot.disconnected { background: #d32f2f; }
+  </style>
+</head>
+<body>
+  <h1>🎮 KorfClock Controller</h1>
+
+  <div id="mini-display">
+    <span id="mode-label">Shot Clock</span>
+    <span id="timer-value">25</span>
+    <span id="status-label">Stopped</span>
+  </div>
+
+  <div class="btn-grid">
+    <button id="btn-start">▶ Start</button>
+    <button id="btn-stop">⏸ Stop</button>
+    <button id="btn-reset">↺ Reset (25s)</button>
+    <button id="btn-timeout">⏱ Timeout (60s)</button>
+  </div>
+
+  <p id="conn-status">
+    <span id="conn-dot"></span>
+    <span id="conn-text">Connecting…</span>
+  </p>
+
+  <!-- Socket.IO client (served automatically by the server) -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // ── State ─────────────────────────────────────────────────────────────────
+    let state = null;        // last received timer state from server
+    let clockOffset = 0;     // estimated offset: Date.now() - serverTime (ms)
+    let rafId = null;        // requestAnimationFrame handle
+
+    const socket = io();
+
+    // ── Socket events ─────────────────────────────────────────────────────────
+    socket.on('connect', () => {
+      setConnected(true);
+    });
+    socket.on('disconnect', () => {
+      setConnected(false);
+    });
+    socket.on('timerUpdate', (incoming) => {
+      // Compute approximate clock offset for latency compensation
+      clockOffset = Date.now() - incoming.serverTime;
+      state = incoming;
+      scheduleRender();
+    });
+
+    // ── Controls ──────────────────────────────────────────────────────────────
+    document.getElementById('btn-start').addEventListener('click',   () => socket.emit('start'));
+    document.getElementById('btn-stop').addEventListener('click',    () => socket.emit('stop'));
+    document.getElementById('btn-reset').addEventListener('click',   () => socket.emit('reset'));
+    document.getElementById('btn-timeout').addEventListener('click', () => socket.emit('timeout'));
+
+    // ── Rendering ─────────────────────────────────────────────────────────────
+
+    /** Returns the current remaining seconds, compensating for clock skew. */
+    function getCurrentRemaining() {
+      if (!state) return 0;
+      if (!state.running) return state.remaining;
+      const adjustedStart = state.startTime + clockOffset;
+      const elapsed = (Date.now() - adjustedStart) / 1000;
+      return Math.max(0, state.startRemaining - elapsed);
+    }
+
+    /** Schedules a RAF loop while running, or renders once when paused. */
+    function scheduleRender() {
+      if (state && state.running) {
+        if (!rafId) loop();
+      } else {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+        render();
+      }
+    }
+
+    function loop() {
+      render();
+      if (state && state.running && getCurrentRemaining() > 0) {
+        rafId = requestAnimationFrame(loop);
+      } else {
+        rafId = null;
+        render(); // final render at 0
+      }
+    }
+
+    function render() {
+      if (!state) return;
+      const rem = getCurrentRemaining();
+      const isTimeout = state.mode === 'timeout';
+
+      // ── mode label
+      document.getElementById('mode-label').textContent =
+        isTimeout ? 'Timeout' : 'Shot Clock';
+
+      // ── numeric display
+      const el = document.getElementById('timer-value');
+      el.textContent = rem > 5 ? Math.ceil(rem).toString()
+                                : rem.toFixed(1);
+
+      // ── colour
+      el.className = '';
+      if (isTimeout) {
+        el.classList.add('timeout-mode');
+      } else if (rem <= 5) {
+        el.classList.add('danger');
+      } else if (rem <= 10) {
+        el.classList.add('warn');
+      }
+
+      // ── status label
+      document.getElementById('status-label').textContent =
+        rem <= 0 ? 'Finished' : state.running ? 'Running' : 'Stopped';
+    }
+
+    // ── Connection indicator ───────────────────────────────────────────────────
+    function setConnected(yes) {
+      const dot  = document.getElementById('conn-dot');
+      const text = document.getElementById('conn-text');
+      dot.className  = yes ? 'connected' : 'disconnected';
+      text.textContent = yes ? 'Connected' : 'Disconnected';
+    }
+  </script>
+</body>
+</html>
