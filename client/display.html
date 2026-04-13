@@ -64,6 +64,22 @@
     }
     #flash.flash-active { opacity: 0.55; }
 
+    /* ── Error overlay ── */
+    #error-screen {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #111;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1.5rem;
+      text-align: center;
+      padding: 2rem;
+    }
+    #error-screen p { color: #ff5555; font-size: clamp(1rem, 3vw, 1.6rem); }
+    #error-screen a { color: #0077ff; font-size: clamp(0.85rem, 2vw, 1.1rem); }
+
     /* ── Connection status (bottom-right, subtle) ── */
     #conn-status {
       position: fixed;
@@ -93,6 +109,12 @@
   <!-- Red flash overlay shown at expiry -->
   <div id="flash"></div>
 
+  <!-- Error overlay shown when room is not found -->
+  <div id="error-screen">
+    <p id="error-msg">Session not found. Please check your code.</p>
+    <a href="/">← Back to home</a>
+  </div>
+
   <p id="conn-status">
     <span id="conn-dot"></span>
     <span id="conn-text">Connecting…</span>
@@ -100,6 +122,10 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    // ── Room code ──────────────────────────────────────────────────────────────
+    const params   = new URLSearchParams(window.location.search);
+    const roomCode = params.get('room') || '';
+
     // ── State ─────────────────────────────────────────────────────────────────
     let state = null;        // most-recent server state snapshot
     let clockOffset = 0;     // ms: client time - server time (compensates latency)
@@ -113,12 +139,22 @@
     const socket = io();
 
     // ── Socket events ─────────────────────────────────────────────────────────
-    socket.on('connect', ()    => setConnected(true));
+    socket.on('connect', () => {
+      setConnected(true);
+      if (roomCode) {
+        socket.emit('joinRoom', roomCode);
+      } else {
+        showError('No room code provided.');
+      }
+    });
     socket.on('disconnect', () => setConnected(false));
+
+    socket.on('roomError', (msg) => {
+      showError(msg);
+    });
 
     socket.on('timerUpdate', (incoming) => {
       clockOffset = Date.now() - incoming.serverTime;
-      const wasRunning = state && state.running;
       state = incoming;
 
       // Reset expiry flag when a new timer starts
@@ -126,6 +162,12 @@
 
       scheduleRender();
     });
+
+    // ── Error screen ──────────────────────────────────────────────────────────
+    function showError(msg) {
+      document.getElementById('error-msg').textContent = msg;
+      document.getElementById('error-screen').style.display = 'flex';
+    }
 
     // ── Rendering ─────────────────────────────────────────────────────────────
 
