@@ -26,6 +26,29 @@
       text-transform: uppercase;
     }
 
+    #room-badge {
+      font-size: 0.85rem;
+      color: #555;
+      letter-spacing: 0.1em;
+    }
+    #room-badge span {
+      color: #00ff88;
+      font-weight: 700;
+      letter-spacing: 0.25em;
+    }
+
+    /* ── error screen ── */
+    #error-screen {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+      text-align: center;
+      padding: 2rem;
+    }
+    #error-screen p { color: #ff5555; font-size: 1.1rem; }
+    #error-screen a { color: #0077ff; font-size: 0.95rem; }
+
     /* ── mini timer display ── */
     #mini-display {
       display: flex;
@@ -116,6 +139,14 @@
 <body>
   <h1>🎮 KorfClock Controller</h1>
 
+  <p id="room-badge">Room: <span id="room-code-display">—</span></p>
+
+  <!-- Shown when no valid room code is present -->
+  <div id="error-screen">
+    <p id="error-msg">Session not found. Please check your code.</p>
+    <a href="/">← Back to home</a>
+  </div>
+
   <div id="mini-display">
     <span id="mode-label">Shot Clock</span>
     <span id="timer-value">25</span>
@@ -137,6 +168,11 @@
   <!-- Socket.IO client (served automatically by the server) -->
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    // ── Room code ──────────────────────────────────────────────────────────────
+    const params   = new URLSearchParams(window.location.search);
+    const roomCode = params.get('room') || '';
+    document.getElementById('room-code-display').textContent = roomCode || '—';
+
     // ── State ─────────────────────────────────────────────────────────────────
     let state = null;        // last received timer state from server
     let clockOffset = 0;     // estimated offset: Date.now() - serverTime (ms)
@@ -147,9 +183,17 @@
     // ── Socket events ─────────────────────────────────────────────────────────
     socket.on('connect', () => {
       setConnected(true);
+      if (roomCode) {
+        socket.emit('joinRoom', roomCode);
+      } else {
+        showError('No room code provided.');
+      }
     });
     socket.on('disconnect', () => {
       setConnected(false);
+    });
+    socket.on('roomError', (msg) => {
+      showError(msg);
     });
     socket.on('timerUpdate', (incoming) => {
       // Compute approximate clock offset for latency compensation
@@ -163,6 +207,14 @@
     document.getElementById('btn-stop').addEventListener('click',    () => socket.emit('stop'));
     document.getElementById('btn-reset').addEventListener('click',   () => socket.emit('reset'));
     document.getElementById('btn-timeout').addEventListener('click', () => socket.emit('timeout'));
+
+    // ── Error screen ──────────────────────────────────────────────────────────
+    function showError(msg) {
+      document.getElementById('error-msg').textContent = msg;
+      document.getElementById('error-screen').style.display = 'flex';
+      document.getElementById('mini-display').style.display = 'none';
+      document.querySelector('.btn-grid').style.display = 'none';
+    }
 
     // ── Rendering ─────────────────────────────────────────────────────────────
 

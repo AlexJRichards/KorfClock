@@ -16,45 +16,128 @@
       justify-content: center;
       min-height: 100vh;
       gap: 2rem;
+      padding: 1.5rem;
     }
     h1 {
       font-size: 3rem;
       letter-spacing: 0.1em;
       color: #00ff88;
     }
-    p { font-size: 1.1rem; color: #888; margin-bottom: 1rem; }
-    .links {
+    .subtitle { font-size: 1.1rem; color: #888; }
+
+    .card {
+      background: #252525;
+      border-radius: 1rem;
+      padding: 2rem;
+      width: 100%;
+      max-width: 22rem;
       display: flex;
-      gap: 1.5rem;
-      flex-wrap: wrap;
-      justify-content: center;
+      flex-direction: column;
+      gap: 1rem;
     }
-    a {
+    .card h2 {
+      font-size: 1.1rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #aaa;
+    }
+
+    button, .btn {
       display: inline-block;
-      padding: 1rem 2.5rem;
-      border-radius: 0.5rem;
-      font-size: 1.3rem;
-      font-weight: bold;
+      padding: 1rem 1.5rem;
+      border: none;
+      border-radius: 0.6rem;
+      font-size: 1.1rem;
+      font-weight: 700;
+      cursor: pointer;
+      text-align: center;
       text-decoration: none;
-      transition: opacity 0.2s;
+      transition: opacity 0.15s, transform 0.1s;
+      -webkit-tap-highlight-color: transparent;
+      width: 100%;
     }
-    a:hover { opacity: 0.85; }
-    .btn-controller {
-      background: #0077ff;
-      color: #fff;
+    button:active, .btn:active { opacity: 0.75; transform: scale(0.97); }
+
+    .btn-create { background: #0077ff; color: #fff; }
+    .btn-join   { background: #00c853; color: #fff; }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 0.8rem 1rem;
+      border-radius: 0.5rem;
+      border: 2px solid #444;
+      background: #1a1a1a;
+      color: #f0f0f0;
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: 0.3em;
+      text-align: center;
+      outline: none;
+      transition: border-color 0.2s;
     }
-    .btn-display {
-      background: #00ff88;
-      color: #111;
+    input[type="text"]:focus { border-color: #00c853; }
+    input[type="text"]::placeholder { letter-spacing: 0.1em; font-weight: 400; color: #555; }
+
+    #error-msg {
+      color: #ff5555;
+      font-size: 0.9rem;
+      text-align: center;
+      min-height: 1.2em;
     }
   </style>
 </head>
 <body>
   <h1>⏱ KorfClock</h1>
-  <p>Real-time korfball shot clock system</p>
-  <div class="links">
-    <a class="btn-controller" href="/controller">🎮 Controller</a>
-    <a class="btn-display"    href="/display">📺 Display</a>
+  <p class="subtitle">Real-time korfball shot clock system</p>
+
+  <!-- Create a new session -->
+  <div class="card">
+    <h2>🎮 Host a game</h2>
+    <button class="btn-create" id="btn-create">Create Session</button>
   </div>
+
+  <!-- Join an existing session -->
+  <div class="card">
+    <h2>📺 Watch a game</h2>
+    <input type="text" id="room-input" maxlength="5" placeholder="Enter code" inputmode="numeric" pattern="[0-9]*" />
+    <div id="error-msg"></div>
+    <button class="btn-join" id="btn-join">Join Session</button>
+  </div>
+
+  <script>
+    // ── Create Session ─────────────────────────────────────────────────────────
+    document.getElementById('btn-create').addEventListener('click', async () => {
+      const btn = document.getElementById('btn-create');
+      btn.textContent = 'Creating…';
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/create-session', { method: 'POST' });
+        if (!res.ok) throw new Error('Server error');
+        const { roomCode } = await res.json();
+        window.location.href = `/controller?room=${roomCode}`;
+      } catch (e) {
+        btn.textContent = 'Create Session';
+        btn.disabled = false;
+        document.getElementById('error-msg').textContent = 'Could not create session. Please try again.';
+      }
+    });
+
+    // ── Join Session ───────────────────────────────────────────────────────────
+    document.getElementById('btn-join').addEventListener('click', joinSession);
+    document.getElementById('room-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') joinSession();
+    });
+
+    function joinSession() {
+      const code = document.getElementById('room-input').value.trim();
+      const errorEl = document.getElementById('error-msg');
+      if (!/^\d{5}$/.test(code)) {
+        errorEl.textContent = 'Please enter a 5-digit code.';
+        return;
+      }
+      errorEl.textContent = '';
+      window.location.href = `/display?room=${code}`;
+    }
+  </script>
 </body>
 </html>
